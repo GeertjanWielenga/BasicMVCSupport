@@ -1,6 +1,5 @@
 package org.netbeans.mvc.basic.logical;
 
-import com.sun.faces.action.RequestMapping;
 import com.sun.source.tree.ClassTree;
 import com.sun.source.util.SourcePositions;
 import com.sun.source.util.TreePathScanner;
@@ -11,14 +10,18 @@ import java.io.IOException;
 import java.util.List;
 import javax.lang.model.element.Element;
 import javax.lang.model.element.TypeElement;
+import javax.mvc.annotation.Controller;
 import javax.swing.AbstractAction;
 import javax.swing.Action;
 import javax.swing.ImageIcon;
 import javax.swing.text.StyledDocument;
+import javax.ws.rs.GET;
+import javax.ws.rs.POST;
 import org.netbeans.api.java.source.CompilationController;
 import org.netbeans.api.java.source.CompilationInfo;
 import org.netbeans.api.java.source.JavaSource;
 import org.netbeans.api.java.source.JavaSource.Phase;
+import org.netbeans.api.java.source.Task;
 import org.netbeans.api.project.Project;
 import org.netbeans.api.project.ProjectUtils;
 import org.netbeans.api.project.SourceGroup;
@@ -26,24 +29,23 @@ import org.netbeans.api.project.Sources;
 import org.netbeans.spi.project.ui.support.NodeFactory;
 import org.netbeans.spi.project.ui.support.NodeFactorySupport;
 import org.netbeans.spi.project.ui.support.NodeList;
-import org.openide.filesystems.FileObject;
-import org.openide.filesystems.FileUtil;
-import org.openide.loaders.DataFolder;
-import org.openide.nodes.AbstractNode;
-import org.openide.nodes.ChildFactory;
-import org.openide.nodes.Children;
-import org.openide.nodes.Node;
-import org.openide.util.Exceptions;
-import org.openide.util.ImageUtilities;
-import org.netbeans.api.java.source.Task;
 import org.openide.cookies.EditorCookie;
 import org.openide.cookies.LineCookie;
 import org.openide.filesystems.FileChangeAdapter;
 import org.openide.filesystems.FileEvent;
+import org.openide.filesystems.FileObject;
+import org.openide.filesystems.FileUtil;
+import org.openide.loaders.DataFolder;
 import org.openide.loaders.DataObject;
 import org.openide.loaders.DataObjectNotFoundException;
+import org.openide.nodes.AbstractNode;
+import org.openide.nodes.ChildFactory;
+import org.openide.nodes.Children;
+import org.openide.nodes.Node;
 import org.openide.text.Line;
 import org.openide.text.NbDocument;
+import org.openide.util.Exceptions;
+import org.openide.util.ImageUtilities;
 
 @NodeFactory.Registration(position = 50, projectType = "org-netbeans-modules-maven")
 public class MVCMethodNodeFactory implements NodeFactory {
@@ -52,7 +54,7 @@ public class MVCMethodNodeFactory implements NodeFactory {
 
     @Override
     public NodeList<?> createNodes(Project project) {
-        AbstractNode nd = new AbstractNode(Children.create(new MVCMethodChildFactory(project), true)) {
+        AbstractNode nd = new AbstractNode(Children.create(new MVCControllerClassChildFactory(project), true)) {
             @Override
             public Image getIcon(int type) {
                 return computeIcon(true, type);
@@ -63,8 +65,139 @@ public class MVCMethodNodeFactory implements NodeFactory {
                 return computeIcon(true, type);
             }
         };
-        nd.setDisplayName("MCV Methods");
+        nd.setDisplayName("MCV Controllers");
         return NodeFactorySupport.fixedNodeList(nd);
+    }
+
+    private class MVCControllerClassChildFactory extends ChildFactory<FileObject> {
+
+        private final Project project;
+
+        private MVCControllerClassChildFactory(Project project) {
+            this.project = project;
+        }
+
+        @Override
+        protected boolean createKeys(List<FileObject> list) {
+            Sources sources = ProjectUtils.getSources(project);
+            SourceGroup[] groups = sources.getSourceGroups(Sources.TYPE_GENERIC);
+            for (SourceGroup group : groups) {
+                for (FileObject fo : group.getRootFolder().getChildren()) {
+                    if (fo.getName().equals("src")) {
+                        FileObject srcFo = fo;
+                        for (FileObject oneSrcChild : srcFo.getChildren()) {
+                            javaclassFinder(oneSrcChild, list);
+                        }
+                    }
+                }
+            }
+            return true;
+        }
+
+        private void javaclassFinder(final FileObject fo, final List<FileObject> list) {
+            if (fo.getMIMEType().equals("text/x-java")) {
+                JavaSource javaSource = JavaSource.forFileObject(fo);
+                if (javaSource != null) {
+                    try {
+                        javaSource.runUserActionTask(new Task<CompilationController>() {
+                            @Override
+                            public void run(CompilationController compilationController) throws Exception {
+                                compilationController.toPhase(Phase.ELEMENTS_RESOLVED);
+                                new DoesFileContainControllerBuildLogicalView(fo, list, compilationController).scan(compilationController.getCompilationUnit(), null);
+                            }
+                        }, true);
+                    } catch (IOException ex) {
+                        Exceptions.printStackTrace(ex);
+                    }
+                }
+            } else {
+                for (FileObject fo2 : fo.getChildren()) {
+                    javaclassFinder(fo2, list);
+                }
+            }
+        }
+
+        @Override
+        protected Node createNodeForKey(FileObject key) {
+            AbstractNode node = new AbstractNode(Children.create(new MVCControllerChildFactory(key), true));
+            node.setIconBaseWithExtension("org/netbeans/mvc/basic/logical/restservice.png");
+            node.setDisplayName(key.getName());
+            return node;
+        }
+
+        private class MVCControllerChildFactory extends ChildFactory<Object> {
+
+            private final FileObject fileObject;
+
+            public MVCControllerChildFactory(FileObject key) {
+                this.fileObject = key;
+                fileObject.addFileChangeListener(new FileChangeAdapter() {
+                    @Override
+                    public void fileChanged(FileEvent fe) {
+                        refresh(true);
+                    }
+                });
+            }
+
+            @Override
+            protected boolean createKeys(final List<Object> list) {
+                JavaSource javaSource = JavaSource.forFileObject(fileObject);
+                if (javaSource != null) {
+                    try {
+                        javaSource.runUserActionTask(new Task<CompilationController>() {
+                            @Override
+                            public void run(CompilationController compilationController) throws Exception {
+                                compilationController.toPhase(Phase.ELEMENTS_RESOLVED);
+                                new ParseFileIdentifyMethodsBuildLogicalView(list, compilationController).scan(compilationController.getCompilationUnit(), null);
+                            }
+                        }, true);
+                    } catch (IOException ex) {
+                        Exceptions.printStackTrace(ex);
+                    }
+                }
+                return true;
+            }
+
+            @Override
+            protected Node createNodeForKey(final Object key) {
+                AbstractNode node = new AbstractNode(Children.LEAF) {
+                    @Override
+                    public Action getPreferredAction() {
+                        return OpenFileAtMethodAction();
+                    }
+
+                    @Override
+                    public Action[] getActions(boolean context) {
+                        return new Action[]{OpenFileAtMethodAction()};
+                    }
+
+                    private Action OpenFileAtMethodAction() {
+                        return new AbstractAction("Open") {
+                            @Override
+                            public void actionPerformed(ActionEvent e) {
+                                JavaSource javaSource = JavaSource.forFileObject(fileObject);
+                                if (javaSource != null) {
+                                    try {
+                                        javaSource.runUserActionTask(new Task<CompilationController>() {
+                                            @Override
+                                            public void run(CompilationController compilationController) throws Exception {
+                                                compilationController.toPhase(Phase.ELEMENTS_RESOLVED);
+                                                new ParseFileIdentifyLineOpenFile(fileObject, key.toString(), compilationController).scan(compilationController.getCompilationUnit(), null);
+                                            }
+                                        }, true);
+                                    } catch (IOException ex) {
+                                        Exceptions.printStackTrace(ex);
+                                    }
+                                }
+                            }
+                        };
+                    }
+                };
+                node.setDisplayName(key.toString());
+                node.setIconBaseWithExtension("org/netbeans/mvc/basic/logical/method.png");
+                return node;
+            }
+        }
     }
 
     private Image computeIcon(boolean opened, int type) {
@@ -73,6 +206,41 @@ public class MVCMethodNodeFactory implements NodeFactory {
         Image image = ((ImageIcon) icon).getImage();
         image = ImageUtilities.mergeImages(image, REST_SERVICES_BADGE, 7, 7);
         return image;
+    }
+
+    private class DoesFileContainControllerBuildLogicalView extends TreePathScanner<Void, Void> {
+
+        private final FileObject fo;
+
+        private final List list;
+        private CompilationInfo info;
+
+        public DoesFileContainControllerBuildLogicalView(FileObject fo, List list, CompilationInfo info) {
+            this.fo = fo;
+            this.list = list;
+            this.info = info;
+        }
+
+        @Override
+        public Void visitClass(ClassTree t, Void v) {
+            Element el = info.getTrees().getElement(getCurrentPath());
+            if (el != null) {
+                TypeElement te = (TypeElement) el;
+                if (te.getAnnotation(Controller.class) != null) {
+                    list.add(fo);
+                } else {
+                    List<? extends Element> enclosedElements = te.getEnclosedElements();
+                    for (int i = 0; i < enclosedElements.size(); i++) {
+                        Element enclosedElement = (Element) enclosedElements.get(i);
+                        if (enclosedElement.getAnnotation(Controller.class) != null) {
+                            list.add(fo);
+                            break;
+                        }
+                    }
+                }
+            }
+            return null;
+        }
     }
 
     private class ParseFileIdentifyMethodsBuildLogicalView extends TreePathScanner<Void, Void> {
@@ -90,11 +258,21 @@ public class MVCMethodNodeFactory implements NodeFactory {
             Element el = info.getTrees().getElement(getCurrentPath());
             if (el != null) {
                 TypeElement te = (TypeElement) el;
-                List<? extends Element> enclosedElements = te.getEnclosedElements();
-                for (int i = 0; i < enclosedElements.size(); i++) {
-                    Element enclosedElement = (Element) enclosedElements.get(i);
-                    if (enclosedElement.getAnnotation(RequestMapping.class) != null) {
-                        list.add(enclosedElement.getSimpleName());
+                if (te.getAnnotation(Controller.class) != null) {
+                    List<? extends Element> enclosedElements = te.getEnclosedElements();
+                    for (int i = 0; i < enclosedElements.size(); i++) {
+                        Element ec = (Element) enclosedElements.get(i);
+                        if (ec.getAnnotation(POST.class) != null || ec.getAnnotation(GET.class) != null) {
+                            list.add(ec.getSimpleName());
+                        }
+                    }
+                } else {
+                    List<? extends Element> enclosedElements = te.getEnclosedElements();
+                    for (int i = 0; i < enclosedElements.size(); i++) {
+                        Element enclosedElement = (Element) enclosedElements.get(i);
+                        if (enclosedElement.getAnnotation(Controller.class) != null) {
+                            list.add(enclosedElement.getSimpleName());
+                        }
                     }
                 }
             }
@@ -149,128 +327,6 @@ public class MVCMethodNodeFactory implements NodeFactory {
             }
 
             return null;
-        }
-    }
-
-    private class MVCMethodChildFactory extends ChildFactory<FileObject> {
-
-        private final Project project;
-
-        private MVCMethodChildFactory(Project project) {
-            this.project = project;
-        }
-
-        @Override
-        protected boolean createKeys(List<FileObject> list) {
-            Sources sources = ProjectUtils.getSources(project);
-            SourceGroup[] groups = sources.getSourceGroups(Sources.TYPE_GENERIC);
-            for (SourceGroup group : groups) {
-                for (FileObject fo : group.getRootFolder().getChildren()) {
-                    if (fo.getName().equals("src")) {
-                        FileObject srcFo = fo;
-                        for (FileObject oneSrcChild : srcFo.getChildren()) {
-                            javaclassFinder(oneSrcChild, list);
-                        }
-                    }
-                }
-            }
-            return true;
-        }
-
-        private void javaclassFinder(FileObject fo, List<FileObject> list) {
-            if (fo.getMIMEType().equals("text/x-java")) {
-                list.add(fo);
-            } else {
-                for (FileObject fo2 : fo.getChildren()) {
-                    javaclassFinder(fo2, list);
-                }
-            }
-        }
-
-        @Override
-        protected Node createNodeForKey(FileObject key) {
-            AbstractNode node = new AbstractNode(Children.create(new OneMVCMethodChildFactory(key), true));
-            node.setIconBaseWithExtension("org/netbeans/mvc/basic/logical/restservice.png");
-            node.setDisplayName(key.getName());
-            return node;
-        }
-
-        private class OneMVCMethodChildFactory extends ChildFactory<Object> {
-
-            private final FileObject fileObject;
-
-            public OneMVCMethodChildFactory(FileObject key) {
-                this.fileObject = key;
-                fileObject.addFileChangeListener(new FileChangeAdapter() {
-                    @Override
-                    public void fileChanged(FileEvent fe) {
-                        refresh(true);
-                    }
-                });
-            }
-
-            @Override
-            protected boolean createKeys(final List<Object> list) {
-                JavaSource javaSource = JavaSource.forFileObject(fileObject);
-                if (javaSource != null) {
-                    try {
-                        javaSource.runUserActionTask(new Task<CompilationController>() {
-                            @Override
-                            public void run(CompilationController compilationController) throws Exception {
-                                compilationController.toPhase(Phase.ELEMENTS_RESOLVED);
-                                new ParseFileIdentifyMethodsBuildLogicalView(list, compilationController).scan(compilationController.getCompilationUnit(), null);
-                            }
-                        }, true);
-                    } catch (IOException ex) {
-                        Exceptions.printStackTrace(ex);
-                    }
-                }
-                return true;
-            }
-
-            @Override
-            protected Node createNodeForKey(final Object key) {
-                AbstractNode node = new AbstractNode(Children.LEAF) {
-                    @Override
-                    public Action getPreferredAction() {
-                        return OpenFileAtMethodAction();
-                    }
-
-                    @Override
-                    public Action[] getActions(boolean context) {
-                        return new Action[]{OpenFileAtMethodAction(), new AbstractAction("Test Method Uri") {
-                            @Override
-                            public void actionPerformed(ActionEvent e) {
-                            }
-                        }};
-                    }
-
-                    private Action OpenFileAtMethodAction() {
-                        return new AbstractAction("Open") {
-                            @Override
-                            public void actionPerformed(ActionEvent e) {
-                                JavaSource javaSource = JavaSource.forFileObject(fileObject);
-                                if (javaSource != null) {
-                                    try {
-                                        javaSource.runUserActionTask(new Task<CompilationController>() {
-                                            @Override
-                                            public void run(CompilationController compilationController) throws Exception {
-                                                compilationController.toPhase(Phase.ELEMENTS_RESOLVED);
-                                                new ParseFileIdentifyLineOpenFile(fileObject, key.toString(), compilationController).scan(compilationController.getCompilationUnit(), null);
-                                            }
-                                        }, true);
-                                    } catch (IOException ex) {
-                                        Exceptions.printStackTrace(ex);
-                                    }
-                                }
-                            }
-                        };
-                    }
-                };
-                node.setDisplayName(key.toString());
-                node.setIconBaseWithExtension("org/netbeans/mvc/basic/logical/method.png");
-                return node;
-            }
         }
     }
 
