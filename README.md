@@ -11,4 +11,6 @@ https://blogs.oracle.com/geertjan/entry/tools_for_mvc_in_java
 
 https://blogs.oracle.com/geertjan/entry/tools_for_mvc_in_java1
 
+https://blogs.oracle.com/geertjan/entry/tools_for_mvc_in_java2
+
 http://java.dzone.com/articles/tools-mvc-java-ee-8
